@@ -1,0 +1,10 @@
+./claude/*
+./CLAUDE.md
+__pycache__/
+*.pyc
+telemetry_plots.png
+rocket_ascent_plots.png
+rocket_body_visualization.png
+engine_workload_and_thrust_distribution.png
+monte_carlo_analysis.png
+telemetry/*.csv
