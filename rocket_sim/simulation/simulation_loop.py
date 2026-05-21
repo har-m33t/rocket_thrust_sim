@@ -7,43 +7,18 @@ from rocket_sim.control.gimbal_actuator import GimbalActuator
 from rocket_sim.control.pid_controller import FlightController
 from rocket_sim.control.sensors import AttitudeSensor
 from rocket_sim.data.rocket_config import RocketConfig
-from rocket_sim.physics.aerodynamics import Aerodynamics
-from rocket_sim.physics.mass_properties import MassProperties
-from rocket_sim.physics.physics_engine import PhysicsEngine
-from rocket_sim.physics.thrust_curve import ThrustCurve
-from rocket_sim.physics.wind_model import WindModel
+from rocket_sim.physics.rocketpy_backend import RocketPyBackend
 from rocket_sim.telemetry.recorder import TelemetryRecorder
 
 
 class SimulationLoop:
-    """Owns the controller, actuator, physics engine, and timestep orchestration."""
+    """Owns the controller, actuator, physics backend, and timestep orchestration."""
 
     def __init__(self, config: RocketConfig, seed: int | None = None) -> None:
         self.config = config
         self.rng = np.random.default_rng(config.random_seed if seed is None else seed)
 
-        thrust_curve = ThrustCurve(thrust_scale=config.thrust_scale)
-        aerodynamics = Aerodynamics(
-            air_density_kgpm3=config.air_density_kgpm3,
-            reference_area_m2=config.reference_area_m2,
-            drag_scale=config.drag_scale,
-        )
-        mass_properties = MassProperties(config)
-        wind_model = WindModel(
-            base_force_n=config.wind_base_force_n,
-            gust_std_n=config.wind_gust_std_n,
-            gust_interval_s=config.gust_interval_s,
-            enable_random_gusts=config.enable_random_gusts,
-            rng=self.rng,
-        )
-
-        self.physics = PhysicsEngine(
-            config=config,
-            thrust_curve=thrust_curve,
-            aerodynamics=aerodynamics,
-            mass_properties=mass_properties,
-            wind_model=wind_model,
-        )
+        self.physics = RocketPyBackend(config=config)
         self.controller = FlightController(
             target_pitch_deg=config.target_pitch_deg,
             kp=config.pid_kp,
@@ -81,7 +56,7 @@ class SimulationLoop:
                 self.config.dt_s,
             )
 
-            # 4. Advance the physics using the realizable actuator command and disturbances.
+            # 4. Query the RocketPy-backed physics state at the next timestep.
             next_state, diagnostics = self.physics.update(
                 state,
                 actual_gimbal_angle_rad,
