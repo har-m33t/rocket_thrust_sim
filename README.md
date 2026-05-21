@@ -1,53 +1,50 @@
 # Rocket Systems Analysis Framework
 
-This project is a control-oriented 2D rocket simulation and analysis framework. It is designed for software engineering and student rocketry interviews where the goal is to demonstrate clean architecture, timestep simulation thinking, telemetry analysis, and control-loop reasoning without drifting into full aerospace research code.
+A control-oriented rocket simulation and analysis framework. The flight dynamics are powered by [RocketPy](https://github.com/RocketPy-Team/RocketPy) — an open-source 6-DOF rocket trajectory simulator — and a thin adapter layer maps RocketPy's state into the existing closed-loop control, sensor, telemetry, and visualization pipeline.
 
-The simulator is intentionally simplified. It focuses on:
+The project demonstrates clean architecture, timestep simulation thinking, telemetry analysis, and control-loop reasoning while delegating the physics to a production-grade trajectory solver.
 
-- closed-loop pitch stabilization
-- timestep-based state updates
-- thrust vector control
-- center-of-mass migration during tank drain
-- simplified stability intuition
-- wind disturbance rejection
+It focuses on:
+
+- closed-loop pitch stabilization with a PID controller
+- timestep-based telemetry collection driven by RocketPy state queries
+- thrust vector control commands through a rate-limited gimbal actuator
+- center-of-mass migration during propellant burn (via RocketPy's mass model)
+- simplified stability intuition (CoP - CoM margin)
 - noisy sensor-driven control
 - telemetry export and engineering visualizations
-- Monte Carlo robustness analysis
+- Monte Carlo robustness analysis across drag, thrust, and wind variations
 
 ## Project Structure
 
 ```text
 .
-├── main.py
+├── main.py                       # entry point: runs the simulation, Monte Carlo, and saves all artifacts
 ├── README.md
 ├── requirements.txt
 ├── rocket_sim/
 │   ├── control/
-│   │   ├── gimbal_actuator.py
-│   │   ├── pid_controller.py
-│   │   └── sensors.py
+│   │   ├── gimbal_actuator.py    # angle + rate-limited gimbal actuator
+│   │   ├── pid_controller.py     # PID attitude controller
+│   │   └── sensors.py            # noisy attitude sensor
 │   ├── data/
-│   │   └── rocket_config.py
+│   │   └── rocket_config.py      # all tunable rocket and simulation parameters
 │   ├── physics/
-│   │   ├── aerodynamics.py
-│   │   ├── mass_properties.py
-│   │   ├── physics_engine.py
-│   │   ├── rocket_state.py
-│   │   ├── thrust_curve.py
-│   │   └── wind_model.py
+│   │   ├── rocket_state.py       # state dataclass shared by every module
+│   │   └── rocketpy_backend.py   # thin adapter: builds RocketPy Environment/Motor/Rocket/Flight and queries state
 │   ├── simulation/
-│   │   ├── monte_carlo.py
-│   │   └── simulation_loop.py
+│   │   ├── monte_carlo.py        # Monte Carlo runner over drag/thrust/wind perturbations
+│   │   └── simulation_loop.py    # closed-loop timestep loop wiring sensor → controller → actuator → physics → telemetry
 │   ├── telemetry/
-│   │   ├── exporter.py
-│   │   └── recorder.py
+│   │   ├── exporter.py           # CSV exporter
+│   │   └── recorder.py           # per-step telemetry collector
 │   └── visualization/
-│       ├── heatmaps.py
-│       ├── monte_carlo.py
-│       ├── plots.py
-│       └── rocket_body.py
+│       ├── heatmaps.py           # engine workload / thrust distribution heatmaps
+│       ├── monte_carlo.py        # trajectory spread + altitude distribution + stability variability plots
+│       ├── plots.py              # multi-panel telemetry line plots
+│       └── rocket_body.py        # rocket body snapshots with CoM, CoP, engine, thrust vector
 └── telemetry/
-    └── simulation_output.csv
+    └── simulation_output.csv     # generated per run
 ```
 
 ## How To Run
@@ -59,95 +56,78 @@ python main.py
 
 The run generates:
 
-- `telemetry/simulation_output.csv`
-- `telemetry_plots.png`
-- `rocket_body_visualization.png`
-- `engine_workload_and_thrust_distribution.png`
-- `monte_carlo_analysis.png`
+- `telemetry/simulation_output.csv` — per-step telemetry
+- `telemetry_plots.png` — closed-loop ascent telemetry
+- `rocket_body_visualization.png` — body snapshots with CoM/CoP/engine/thrust vector
+- `engine_workload_and_thrust_distribution.png` — thrust and gimbal workload heatmaps
+- `monte_carlo_analysis.png` — Monte Carlo trajectory and stability spreads
 
 ## Architecture Diagram
 
 ```text
-RocketState
-    |
-    v
-AttitudeSensor ----> FlightController ----> GimbalActuator
-    |                                         |
-    +---------------- noisy measurements -----+
-                                              |
-                                              v
-                                     PhysicsEngine
-                                              |
-                                              v
-                                    TelemetryRecorder
-                                              |
-                                              v
-                              CSV export + analysis visualizations
+                            ┌─────────────────────────────┐
+                            │      RocketConfig           │
+                            └──────────────┬──────────────┘
+                                           │
+                                           v
+┌──────────────────┐         ┌─────────────────────────────┐
+│  RocketPyBackend │ ◄─────► │  Environment / Motor /      │
+│  (adapter)       │         │  Rocket / Flight (RocketPy) │
+└────────┬─────────┘         └─────────────────────────────┘
+         │ get_state(t), update(state, gimbal, dt)
+         v
+   RocketState  ────►  AttitudeSensor  ────►  FlightController  ────►  GimbalActuator
+                                                                              │
+                                                                              v
+                                                                       TelemetryRecorder
+                                                                              │
+                                                                              v
+                                                          CSV export + analysis visualizations
 ```
 
-## Timestep Simulation Explanation
+## Closed-Loop Timestep
 
 The simulation runs at:
 
 - `dt = 0.01 s`
 - `duration = 10.0 s`
-- Forward Euler integration
 
-Each timestep follows the same clear sequence:
+Each timestep follows the same explicit sequence:
 
 1. Read the current state through a noisy sensor layer
 2. Compute a pitch correction command with the PID controller
 3. Clamp the command with actuator rate and angle limits
-4. Advance the simplified physics by one timestep
+4. Query the RocketPy-backed physics at `t + dt` and map the result into `RocketState`
 5. Record telemetry for analysis and export
 
-This is intentionally explicit because the timestep loop is the core systems-engineering talking point.
+RocketPy integrates the full 6-DOF trajectory up front; the loop then samples that solution at each timestep and threads it through the controller, sensor, actuator, and telemetry layers.
 
-## Control Loop Explanation
+## Control Loop
 
-The rocket starts with a small pitch disturbance and sees lateral wind loading during ascent. The controller receives noisy pitch and angular-rate measurements rather than perfect truth values. It then requests a gimbal correction to drive pitch back toward vertical.
+The rocket starts with a small pitch disturbance and sees aerodynamic and wind loading during ascent. The controller receives noisy pitch and angular-rate measurements rather than perfect truth values. It then requests a gimbal correction to drive pitch back toward vertical.
 
 That separation matters:
 
 - the sensor layer represents avionics uncertainty
 - the controller represents guidance and control logic
 - the actuator represents hardware limitations
-- the physics engine represents the plant being controlled
+- the physics backend represents the plant being controlled
 
-## Simplified Physics Assumptions
+## Physics Backend (RocketPy)
 
-This project is intentionally not a full-fidelity rocket flight model. It uses:
+The `RocketPyBackend` class is the only physics code in the project. It:
 
-- 2D translational motion
-- one pitch angle and one angular rate
-- a scalar pitch inertia
-- a fixed-center approximate CoP for stability intuition
-- a simple drag equation with angle-dependent `Cd`
-- a fixed thrust curve interpolated over time
-- a lateral wind disturbance model with optional gusts
-- a simple rotational damping term
+- constructs a RocketPy `Environment` (standard atmosphere, optional lateral wind)
+- constructs a RocketPy `GenericMotor` from the configured thrust curve and propellant mass
+- constructs a RocketPy `Rocket` with the configured radius, mass, inertia, drag coefficients, and aero surfaces
+- runs a single `Flight` integration covering the configured duration
+- exposes `initial_state()`, `get_state(t)`, and `update(state, gimbal_angle_rad, dt_s)` to the rest of the codebase
 
-It deliberately does not include:
-
-- full 6DOF rigid body dynamics
-- quaternion math
-- CFD-grade aerodynamics
-- tensor inertia formulations
-- detailed aerodynamic moment coefficients
-- rail departure modeling
-- state estimation or navigation filters
+Everything previously handled by hand — thrust computation, drag, acceleration updates, rotational dynamics, position/velocity integration, mass depletion, timestep propagation — is delegated to RocketPy.
 
 ## Center of Mass and Stability Intuition
 
-The dry structure stays fixed, but the fuel is modeled as a draining liquid column. As the tank empties, the fuel centroid moves lower toward the engine. That shifts the overall center of mass over time.
-
-This matters because:
-
-- the same thrust vector does not act on the exact same mass distribution throughout flight
-- engine-to-CoM lever arm changes control effectiveness
-- CoM movement changes the relationship between CoM and the approximate CoP
-
-The project uses a simplified stability metric:
+RocketPy tracks center-of-mass migration as propellant burns. The project still surfaces a simplified stability metric for visualization:
 
 `stability_margin = CoP - CoM`
 
@@ -163,29 +143,24 @@ The framework emphasizes engineering analysis outputs:
 - a gimbal workload heatmap weighted by thrust
 - Monte Carlo trajectory spread and stability variability plots
 
-## Where Real Rocket Data Normally Comes From
+## Monte Carlo Analysis
 
-In a higher-fidelity program, these model inputs would usually come from:
+The Monte Carlo runner perturbs:
 
-- static fire tests
-- manufacturer thrust curves
-- OpenRocket
-- RASAero
-- CFD tools
-- telemetry logs from real flights
-- measured mass property and balance data
+- drag scale
+- thrust scale
+- base wind force
 
-This project uses compact hardcoded approximations so the software structure stays easy to inspect.
+across multiple runs, each with a different RNG seed. For each run it captures the full trajectory and a summary row (max altitude, final lateral position, max pitch, minimum stability margin). The visualization layer plots the trajectory spread, altitude distribution, and stability variability.
 
 ## Future Improvements
 
-Reasonable next steps, while still preserving readability, would include:
+Reasonable next steps include:
 
-- importing thrust curves and aero tables from OpenRocket exports
-- higher-fidelity aerodynamic models
+- closing the control loop back into RocketPy via its controller API so gimbal commands actually drive the integrated trajectory
+- importing thrust curves and aero tables directly from OpenRocket / RASAero exports
 - a state estimator or EKF for noisy sensors
 - controller gain scheduling as mass changes
-- full 6DOF rigid body dynamics
 - actuator lag and servo current models
 - flight replay overlays using real telemetry logs
 
@@ -193,6 +168,6 @@ Reasonable next steps, while still preserving readability, would include:
 
 The right way to describe this project is:
 
-> a control-oriented rocket systems analysis and visualization framework
+> a control-oriented rocket systems analysis and visualization framework on top of RocketPy
 
-That is the intent. The code emphasizes readable architecture, explainable control loops, and engineering intuition rather than claiming research-grade flight prediction.
+The code emphasizes readable architecture, explainable control loops, and engineering intuition while leaning on RocketPy for trajectory fidelity.
